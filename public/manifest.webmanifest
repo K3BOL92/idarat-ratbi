@@ -1,0 +1,17 @@
+{
+  "name": "إدارة راتبي",
+  "short_name": "إدارة راتبي",
+  "description": "إدارة الراتب والمصروفات والتمويل في مكان واحد",
+  "lang": "ar-SA",
+  "dir": "rtl",
+  "start_url": "/idarat-ratbi/",
+  "scope": "/idarat-ratbi/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#292b2b",
+  "theme_color": "#292b2b",
+  "icons": [
+    {"src":"/idarat-ratbi/icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"/idarat-ratbi/icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}
