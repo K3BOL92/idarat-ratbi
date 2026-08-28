@@ -18,9 +18,9 @@ import './styles.css'
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((error) => {
-      console.error('Service worker registration failed:', error);
-    });
-  });
+      console.error('Service worker registration failed:', error)
+    })
+  })
 }
 
 const KEY = 'idarat-ratbi-v3'
@@ -37,6 +37,24 @@ const fmt = n =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Math.max(0, Number(n) || 0))
+
+// عرض التواريخ داخل التطبيق بالتقويم الميلادي دائمًا
+const fmtDate = d =>
+  new Intl.DateTimeFormat('ar-SA', {
+    calendar: 'gregory',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(d)
+
+const fmtDay = d =>
+  new Intl.DateTimeFormat('ar-SA', {
+    calendar: 'gregory',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(d)
 
 const toKey = d => {
   const x = new Date(d)
@@ -266,7 +284,7 @@ function HomePage({ cycle, remaining, available, percentage, daily, todaySpent, 
     <section>
       <Header
         title="إدارة راتبي"
-        sub={`دورة ${new Intl.DateTimeFormat('ar-SA', { day: 'numeric', month: 'long' }).format(cycle.start)} — ${new Intl.DateTimeFormat('ar-SA', { day: 'numeric', month: 'long' }).format(cycle.end)}`}
+        sub={`دورة ${fmtDate(cycle.start)} — ${fmtDate(cycle.end)}`}
       />
 
       <div className="balance">
@@ -340,8 +358,8 @@ function FinanceCard({ finance, financeStart }) {
       </div>
 
       <div className="finance-dates">
-        <div><span>البداية</span><b>{financeStart ? fromKey(financeStart).toLocaleDateString('ar-SA') : '—'}</b></div>
-        <div><span>النهاية</span><b>{finance.end ? finance.end.toLocaleDateString('ar-SA') : '—'}</b></div>
+        <div><span>البداية</span><b>{financeStart ? fmtDate(fromKey(financeStart)) : '—'}</b></div>
+        <div><span>النهاية</span><b>{finance.end ? fmtDate(finance.end) : '—'}</b></div>
       </div>
     </div>
   )
@@ -356,7 +374,7 @@ function ExpensePage({ groups, spent, onEdit, onDelete }) {
       ) : groups.map(group => (
         <div className="day" key={group.date}>
           <div className="dayhead">
-            <span>{fromKey(group.date).toLocaleDateString('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+            <span>{fmtDay(fromKey(group.date))}</span>
             <b>{fmt(group.total)} ريال</b>
           </div>
           <details>
@@ -450,20 +468,17 @@ function SettingsPage({ settings, onSave }) {
           <div><span>مدة التمويل</span><b>60 شهر</b></div>
           <div><span>الأشهر المنقضية</span><b className="green">{finance.done} شهر</b></div>
           <div><span>الأشهر المتبقية</span><b className="red">{finance.left} شهر</b></div>
-          <div><span>تاريخ النهاية</span><b>{finance.end ? finance.end.toLocaleDateString('ar-SA') : '—'}</b></div>
+          <div><span>تاريخ النهاية</span><b>{finance.end ? fmtDate(finance.end) : '—'}</b></div>
         </div>
 
         <div className="available"><span>المتاح بعد المصاريف الثابتة</span><b>{fmt(available)} ريال</b></div>
 
-        <button
-          className="primary"
-          onClick={() => onSave({
-            salary: Number(form.salary) || 0,
-            fixed: Number(form.fixed) || 0,
-            cycleDay: Number(form.cycleDay) || 27,
-            financeStart: form.financeStart || '',
-          })}
-        >
+        <button className="primary" onClick={() => onSave({
+          salary: Number(form.salary) || 0,
+          fixed: Number(form.fixed) || 0,
+          cycleDay: Number(form.cycleDay) || 27,
+          financeStart: form.financeStart || '',
+        })}>
           <Check size={19} />
           حفظ التغييرات
         </button>
