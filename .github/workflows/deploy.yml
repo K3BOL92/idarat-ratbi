@@ -31,6 +31,8 @@ jobs:
         run: npm install
 
       - name: Build
+        env:
+          VITE_STOCKS_API_KEY: ${{ secrets.VITE_STOCKS_API_KEY }}
         run: npm run build
 
       - name: Setup Pages
