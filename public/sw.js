@@ -1,5 +1,5 @@
-const CACHE_NAME = 'idarat-ratbi-v1';
-const BASE = '/idarat-ratbi/';
+const CACHE_NAME = 'idarat-ratbi-v2';
+const BASE = self.location.pathname.replace(/\/sw\.js$/, '/');
 const APP_SHELL = [
   BASE,
   BASE + 'index.html',
