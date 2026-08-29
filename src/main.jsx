@@ -12,6 +12,9 @@ import {
   Pencil,
   Trash2,
   WalletCards,
+  TrendingUp,
+  TrendingDown,
+  RefreshCw,
 } from 'lucide-react'
 import './styles.css'
 
@@ -25,6 +28,9 @@ if ('serviceWorker' in navigator) {
 
 const KEY = 'idarat-ratbi-v3'
 
+// مفتاح Twelve Data يُقرأ من ملف .env (متغير VITE_STOCKS_API_KEY) ولا يُكتب هنا أبدًا
+const STOCKS_API_KEY = import.meta.env.VITE_STOCKS_API_KEY || ''
+
 const defaults = {
   salary: 15000,
   fixed: 4250,
@@ -37,6 +43,16 @@ const fmt = n =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Math.max(0, Number(n) || 0))
+
+// نفس التنسيق لكن بدون قصّ القيم السالبة (نحتاجها لعرض الخسارة بإشارة سالبة)
+const fmtSigned = n => {
+  const num = Number(n) || 0
+  const sign = num > 0 ? '+' : ''
+  return `${sign}${new Intl.NumberFormat('ar-SA', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(num)}`
+}
 
 // عرض التواريخ داخل التطبيق بالتقويم الميلادي دائمًا
 const fmtDate = d =>
@@ -89,9 +105,37 @@ function load() {
     return {
       settings: { ...defaults, ...(saved?.settings || {}) },
       expenses: Array.isArray(saved?.expenses) ? saved.expenses : [],
+      stocks: Array.isArray(saved?.stocks) ? saved.stocks : [],
     }
   } catch {
-    return { settings: defaults, expenses: [] }
+    return { settings: defaults, expenses: [], stocks: [] }
+  }
+}
+
+// تجيب سعر سهم واحد. الأسهم السعودية تحتاج mic_code=XSAU، والعالمية ترمز مباشرة (AAPL, TSLA...)
+async function fetchQuote(stock) {
+  const params = new URLSearchParams({
+    symbol: stock.symbol,
+    apikey: STOCKS_API_KEY,
+  })
+  if (stock.exchange === 'tadawul') params.set('mic_code', 'XSAU')
+
+  const res = await fetch(`https://api.twelvedata.com/quote?${params}`)
+  const data = await res.json()
+
+  if (data.status === 'error' || data.code) {
+    throw new Error(data.message || 'تعذر جلب السعر')
+  }
+
+  const price = Number(data.close)
+  if (Number.isNaN(price)) {
+    throw new Error('رمز السهم غير صحيح أو غير مدعوم')
+  }
+
+  return {
+    price,
+    changePercent: Number(data.percent_change) || 0,
+    name: data.name || stock.name,
   }
 }
 
@@ -118,9 +162,48 @@ function App() {
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState({ amount: '', desc: '', date: toKey(new Date()) })
 
+  const [stockSheet, setStockSheet] = useState(false)
+  const [editStockId, setEditStockId] = useState(null)
+  const [stockForm, setStockForm] = useState({ symbol: '', exchange: 'tadawul', shares: '', buyPrice: '', buyDate: toKey(new Date()) })
+  const [stocksRefreshing, setStocksRefreshing] = useState(false)
+  const [stocksError, setStocksError] = useState('')
+
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify(state))
   }, [state])
+
+  async function refreshStocks() {
+    if (!STOCKS_API_KEY || !state.stocks.length) return
+    setStocksRefreshing(true)
+    setStocksError('')
+    const results = await Promise.all(
+      state.stocks.map(async stock => {
+        try {
+          const quote = await fetchQuote(stock)
+          return { ...stock, currentPrice: quote.price, changePercent: quote.changePercent, name: quote.name, lastUpdated: Date.now(), error: null }
+        } catch (err) {
+          return { ...stock, error: err.message || 'تعذر جلب السعر' }
+        }
+      })
+    )
+    setState(current => ({ ...current, stocks: results }))
+    if (results.length && results.every(s => s.error)) {
+      setStocksError('تعذر تحديث أي سهم، تحقق من مفتاح الـ API في ملف .env')
+    }
+    setStocksRefreshing(false)
+  }
+
+  useEffect(() => {
+    if (tab === 'stocks') refreshStocks()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  useEffect(() => {
+    if (!STOCKS_API_KEY) return
+    const interval = setInterval(refreshStocks, 5 * 60 * 1000) // كل 5 دقائق
+    return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.stocks.length])
 
   const cycle = getCycle(new Date(), Number(state.settings.cycleDay) || 27)
   const expenses = state.expenses.filter(e => fromKey(e.date) >= cycle.start && fromKey(e.date) <= cycle.end)
@@ -193,6 +276,68 @@ function App() {
     }))
   }
 
+  function openAddStock() {
+    setEditStockId(null)
+    setStockForm({ symbol: '', exchange: 'tadawul', shares: '', buyPrice: '', buyDate: toKey(new Date()) })
+    setStockSheet(true)
+  }
+
+  function openEditStock(stock) {
+    setEditStockId(stock.id)
+    setStockForm({ symbol: stock.symbol, exchange: stock.exchange, shares: stock.shares, buyPrice: stock.buyPrice, buyDate: stock.buyDate })
+    setStockSheet(true)
+  }
+
+  function closeStockSheet() {
+    setStockSheet(false)
+    setEditStockId(null)
+    setStockForm({ symbol: '', exchange: 'tadawul', shares: '', buyPrice: '', buyDate: toKey(new Date()) })
+  }
+
+  async function saveStock() {
+    const shares = Number(stockForm.shares)
+    const buyPrice = Number(stockForm.buyPrice)
+    if (!stockForm.symbol.trim() || !shares || shares <= 0 || !buyPrice || buyPrice <= 0) return
+
+    const item = {
+      id: editStockId || crypto.randomUUID(),
+      symbol: stockForm.symbol.trim().toUpperCase(),
+      exchange: stockForm.exchange,
+      shares,
+      buyPrice,
+      buyDate: stockForm.buyDate,
+      currentPrice: null,
+      changePercent: null,
+      lastUpdated: null,
+      error: null,
+    }
+
+    setState(current => ({
+      ...current,
+      stocks: editStockId
+        ? current.stocks.map(s => (s.id === editStockId ? { ...item, currentPrice: s.currentPrice, changePercent: s.changePercent, lastUpdated: s.lastUpdated } : s))
+        : [...current.stocks, item],
+    }))
+    closeStockSheet()
+
+    if (STOCKS_API_KEY) {
+      try {
+        const quote = await fetchQuote(item)
+        setState(current => ({
+          ...current,
+          stocks: current.stocks.map(s => (s.id === item.id ? { ...s, currentPrice: quote.price, changePercent: quote.changePercent, name: quote.name, lastUpdated: Date.now() } : s)),
+        }))
+      } catch { /* يتم تجاهل الخطأ هنا، زر التحديث بالأعلى يعرضه لاحقًا */ }
+    }
+  }
+
+  function deleteStock(id) {
+    setState(current => ({
+      ...current,
+      stocks: current.stocks.filter(s => s.id !== id),
+    }))
+  }
+
   return (
     <div className="app">
       <main>
@@ -208,6 +353,7 @@ function App() {
             spent={spent}
             finance={finance}
             financeStart={state.settings.financeStart}
+            stocks={state.stocks}
             openAdd={openAdd}
           />
         )}
@@ -231,6 +377,19 @@ function App() {
           />
         )}
 
+        {tab === 'stocks' && (
+          <StocksPage
+            stocks={state.stocks}
+            hasApiKey={Boolean(STOCKS_API_KEY)}
+            refreshing={stocksRefreshing}
+            error={stocksError}
+            onRefresh={refreshStocks}
+            onAdd={openAddStock}
+            onEdit={openEditStock}
+            onDelete={deleteStock}
+          />
+        )}
+
         {tab === 'settings' && (
           <SettingsPage
             settings={state.settings}
@@ -243,6 +402,7 @@ function App() {
         {[
           [Home, 'home', 'الرئيسية'],
           [Receipt, 'log', 'المصروفات'],
+          [TrendingUp, 'stocks', 'المحفظة'],
           [ChartNoAxesCombined, 'stats', 'الإحصائيات'],
           [Settings, 'settings', 'الإعدادات'],
         ].map(([Icon, key, label]) => (
@@ -262,6 +422,16 @@ function App() {
           onSave={saveExpense}
         />
       )}
+
+      {stockSheet && (
+        <StockSheet
+          form={stockForm}
+          setForm={setStockForm}
+          edit={Boolean(editStockId)}
+          onClose={closeStockSheet}
+          onSave={saveStock}
+        />
+      )}
     </div>
   )
 }
@@ -275,8 +445,8 @@ function Header({ title, sub }) {
   )
 }
 
-function HomePage({ cycle, remaining, available, percentage, daily, todaySpent, remainingDays, spent, finance, financeStart, openAdd }) {
-  const r = 76
+function HomePage({ cycle, remaining, available, percentage, daily, todaySpent, remainingDays, spent, finance, financeStart, stocks, openAdd }) {
+  const r = 74
   const circumference = 2 * Math.PI * r
   const dash = circumference * Math.max(0, Math.min(100, percentage)) / 100
 
@@ -303,6 +473,8 @@ function HomePage({ cycle, remaining, available, percentage, daily, todaySpent, 
         <em>من أصل {fmt(available)} ريال متاح</em>
       </div>
 
+      <HomePortfolioSummary stocks={stocks} />
+
       <div className="daily">
         <span>حد الصرف اليومي</span>
         <strong>{fmt(daily)} <i>ريال</i></strong>
@@ -325,6 +497,51 @@ function HomePage({ cycle, remaining, available, percentage, daily, todaySpent, 
 
       <FinanceCard finance={finance} financeStart={financeStart} />
     </section>
+  )
+}
+
+function HomePortfolioSummary({ stocks }) {
+  const totals = { SAR: { invested: 0, current: 0 }, USD: { invested: 0, current: 0 } }
+
+  stocks.forEach(stock => {
+    const currency = stock.exchange === 'tadawul' ? 'SAR' : 'USD'
+    const invested = stock.shares * stock.buyPrice
+    const current = stock.shares * (stock.currentPrice ?? stock.buyPrice)
+    totals[currency].invested += invested
+    totals[currency].current += current
+  })
+
+  const entries = Object.entries(totals).filter(([, total]) => total.invested > 0)
+  if (!entries.length) return null
+
+  return (
+    <div className="portfolio-mini">
+      <div className="portfolio-mini-head">
+        <span>ملخص أداء المحفظة</span>
+      </div>
+
+      {entries.map(([currency, total]) => {
+        const profit = total.current - total.invested
+        const profitPct = total.invested ? (profit / total.invested) * 100 : 0
+        const isUp = profit >= 0
+        const label = currency === 'SAR' ? 'محفظة التداول' : 'المحفظة العالمية'
+        const unit = currency === 'SAR' ? 'ريال' : '$'
+
+        return (
+          <div className="portfolio-mini-row" key={currency}>
+            <div>
+              <b>{label}</b>
+              <small>{fmt(total.current)} {unit}</small>
+            </div>
+
+            <div className="portfolio-mini-metrics">
+              <span className={isUp ? 'green' : 'red'}>{fmtSigned(profit)} {unit}</span>
+              <strong className={isUp ? 'green' : 'red'}>{fmtSigned(profitPct)}%</strong>
+            </div>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -433,6 +650,214 @@ function StatsPage({ cycle, expenses, spent, remaining, settings }) {
         <div><span>أقل يوم</span><b>{lowest ? `${fmt(lowest)} ريال` : '—'}</b></div>
       </div>
     </section>
+  )
+}
+
+function StocksPage({ stocks, hasApiKey, refreshing, error, onRefresh, onAdd, onEdit, onDelete }) {
+  const totals = { SAR: { invested: 0, current: 0 }, USD: { invested: 0, current: 0 } }
+  stocks.forEach(s => {
+    const currency = s.exchange === 'tadawul' ? 'SAR' : 'USD'
+    const invested = s.shares * s.buyPrice
+    const current = s.shares * (s.currentPrice ?? s.buyPrice)
+    totals[currency].invested += invested
+    totals[currency].current += current
+  })
+
+  const lastUpdated = stocks.reduce((latest, s) => (s.lastUpdated && s.lastUpdated > latest ? s.lastUpdated : latest), 0)
+
+  return (
+    <section>
+      <Header
+        title="المحفظة الاستثمارية"
+        sub={lastUpdated ? `آخر تحديث ${new Intl.DateTimeFormat('ar-SA', { hour: '2-digit', minute: '2-digit' }).format(lastUpdated)}` : 'أضف أسهمك لمتابعة أدائها'}
+      />
+
+      {!hasApiKey && (
+        <div className="empty">
+          لم يتم ضبط مفتاح الـ API بعد. أضف VITE_STOCKS_API_KEY في ملف .env لتفعيل تحديث الأسعار.
+        </div>
+      )}
+
+      {hasApiKey && (totals.SAR.invested > 0 || totals.USD.invested > 0) && (
+        <>
+          {totals.SAR.invested > 0 && <PortfolioSummary label="محفظة تداول" currency="ريال" totals={totals.SAR} />}
+          {totals.USD.invested > 0 && <PortfolioSummary label="المحفظة العالمية" currency="$" totals={totals.USD} />}
+        </>
+      )}
+
+      {hasApiKey && (
+        <button className="secondary" onClick={onRefresh} disabled={refreshing} style={{ marginTop: totals.SAR.invested || totals.USD.invested ? 0 : 12 }}>
+          <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
+          {refreshing ? 'جاري التحديث...' : 'تحديث الأسعار'}
+        </button>
+      )}
+
+      {error && <div className="empty" style={{ marginTop: 10 }}>{error}</div>}
+
+      {!stocks.length ? (
+        <div className="empty" style={{ marginTop: 12 }}>لا توجد أسهم مضافة بعد.</div>
+      ) : (
+        <div style={{ marginTop: 14 }}>
+          {stocks.map(stock => (
+            <StockRow key={stock.id} stock={stock} onEdit={() => onEdit(stock)} onDelete={() => onDelete(stock.id)} />
+          ))}
+        </div>
+      )}
+
+      <button className="add" onClick={onAdd}>
+        <Plus size={21} />
+        إضافة سهم
+      </button>
+    </section>
+  )
+}
+
+function PortfolioSummary({ label, currency, totals }) {
+  const profit = totals.current - totals.invested
+  const profitPct = totals.invested ? (profit / totals.invested) * 100 : 0
+  const isUp = profit >= 0
+
+  return (
+    <div className="finance-card">
+      <div className="finance-head">
+        <div>
+          <span>{label}</span>
+          <h2>{fmt(totals.current)} <small>{currency}</small></h2>
+        </div>
+        <div className="finance-icon">{isUp ? <TrendingUp size={22} /> : <TrendingDown size={22} />}</div>
+      </div>
+      <div className="finance-stats">
+        <div>
+          <span className={isUp ? 'green-dot' : 'red-dot'} />
+          <div>
+            <b className={isUp ? 'green' : 'red'}>{fmtSigned(profit)}</b>
+            <small>ربح/خسارة</small>
+          </div>
+        </div>
+        <div>
+          <div>
+            <b className={isUp ? 'green' : 'red'}>{fmtSigned(profitPct)}%</b>
+            <small>نسبة الأداء</small>
+          </div>
+        </div>
+        <div>
+          <div>
+            <b>{fmt(totals.invested)}</b>
+            <small>رأس المال</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StockRow({ stock, onEdit, onDelete }) {
+  const currency = stock.exchange === 'tadawul' ? 'ريال' : '$'
+  const hasPrice = stock.currentPrice != null
+  const currentValue = stock.shares * (stock.currentPrice ?? stock.buyPrice)
+  const invested = stock.shares * stock.buyPrice
+  const profit = currentValue - invested
+  const profitPct = invested ? (profit / invested) * 100 : 0
+  const isUp = profit >= 0
+
+  return (
+    <div className="day">
+      <div className="dayhead">
+        <span>{stock.symbol} <small style={{ color: '#777e7b' }}>· {stock.shares} سهم</small></span>
+        <b className={hasPrice ? (isUp ? 'green' : 'red') : ''}>
+          {hasPrice ? `${fmtSigned(profitPct)}%` : stock.error ? 'خطأ' : '—'}
+        </b>
+      </div>
+      <details>
+        <summary>التفاصيل</summary>
+        <div className="row">
+          <span>سعر الشراء</span>
+          <b>{fmt(stock.buyPrice)} {currency}</b>
+          <span />
+          <span />
+        </div>
+        <div className="row">
+          <span>السعر الحالي</span>
+          <b>{hasPrice ? `${fmt(stock.currentPrice)} ${currency}` : '—'}</b>
+          <span />
+          <span />
+        </div>
+        {hasPrice && (
+          <div className="row">
+            <span>تغيّر اليوم</span>
+            <b className={stock.changePercent >= 0 ? 'green' : 'red'}>{fmtSigned(stock.changePercent)}%</b>
+            <span />
+            <span />
+          </div>
+        )}
+        <div className="row">
+          <span>الربح/الخسارة</span>
+          <b className={hasPrice ? (isUp ? 'green' : 'red') : ''}>{hasPrice ? `${fmtSigned(profit)} ${currency}` : '—'}</b>
+          <button onClick={onEdit} aria-label="تعديل"><Pencil size={15} /></button>
+          <button onClick={onDelete} aria-label="حذف"><Trash2 size={15} /></button>
+        </div>
+        {stock.error && <div className="empty" style={{ marginTop: 8, padding: 12, fontSize: 11 }}>{stock.error}</div>}
+      </details>
+    </div>
+  )
+}
+
+function StockSheet({ form, setForm, edit, onClose, onSave }) {
+  return (
+    <div className="veil sheetveil" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+      <div className="sheet">
+        <div className="handle" />
+        <div className="sheethead">
+          <h2>{edit ? 'تعديل سهم' : 'إضافة سهم'}</h2>
+          <button onClick={onClose}><X /></button>
+        </div>
+
+        <label>
+          السوق
+          <div className="toggle">
+            <button
+              type="button"
+              className={form.exchange === 'tadawul' ? 'on' : ''}
+              onClick={() => setForm({ ...form, exchange: 'tadawul' })}
+            >
+              تداول
+            </button>
+            <button
+              type="button"
+              className={form.exchange === 'global' ? 'on' : ''}
+              onClick={() => setForm({ ...form, exchange: 'global' })}
+            >
+              عالمي
+            </button>
+          </div>
+        </label>
+
+        <label>
+          رمز السهم <small>{form.exchange === 'tadawul' ? 'مثال: 2222 (أرامكو)' : 'مثال: AAPL (أبل)'}</small>
+          <input value={form.symbol} placeholder={form.exchange === 'tadawul' ? '2222' : 'AAPL'} onChange={e => setForm({ ...form, symbol: e.target.value })} />
+        </label>
+
+        <label>
+          عدد الأسهم <small>يقبل كسور، مثال: 2.5</small>
+          <input type="number" inputMode="decimal" step="any" min="0" placeholder="0" value={form.shares} onChange={e => setForm({ ...form, shares: e.target.value })} />
+        </label>
+
+        <label>
+          سعر الشراء (لكل سهم)
+          <input type="number" inputMode="decimal" step="any" min="0" placeholder="0.00" value={form.buyPrice} onChange={e => setForm({ ...form, buyPrice: e.target.value })} />
+        </label>
+
+        <label>
+          تاريخ الشراء
+          <div className="date">
+            <CalendarDays size={18} />
+            <input type="date" value={form.buyDate} onChange={e => setForm({ ...form, buyDate: e.target.value })} />
+          </div>
+        </label>
+
+        <button className="primary" onClick={onSave}>{edit ? 'حفظ التعديل' : 'حفظ السهم'}</button>
+      </div>
+    </div>
   )
 }
 
